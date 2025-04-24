@@ -1,0 +1,371 @@
+---
+title: "Homework 10"
+author: "Your Peer"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(kernlab)
+library(kknn)
+```
+
+# Question 14.1 - Breast Cancer Imputation Exercise
+
+```{r process-data, message = FALSE, warning = FALSE}
+cancer_df <- read.table("../data/breast-cancer-wisconsin.data.txt", sep = ",")
+
+df_colnames <- c("id", "clump_thickness", "cell_size_uniformity", "cell_shape_uniformity",
+                 "marginal_adhesion", "single_epithelial_cell_size", "bare_nuclei", "bland_chromatin",
+                 "normal_nucleoli", "mitoses", "class")
+
+names(cancer_df) <- df_colnames
+
+cancer_df <- cancer_df %>%
+  mutate(
+    id = factor(id),
+    across(clump_thickness:mitoses, as.integer),
+    malignant = ifelse(class == 4, 1, 0)
+  ) %>%
+  select(-class)
+```
+
+In the data dictionary, the only factor to have missing data is "bare_nuclei", which we can verify in the summary below.
+
+```{r}
+summary(cancer_df$bare_nuclei)
+```
+
+There are 16 total missing data points.
+
+## Part 1: Mean/Mode Method
+
+We'll start with the imputation method that replaces the missing values with a central value. In the summary of "bare_nuclei" above, we can see that the distribution might have some interesting patterns - which could complicate the selected central tendency measure.
+
+```{r bare-nuclei-pdf, warning = FALSE}
+cancer_df %>%
+  ggplot(aes(x = bare_nuclei)) +
+  geom_density(color = "blue", size = 1.25) +
+  labs(title = "Probability density function for bare_nuclei") +
+  theme_bw()
+```
+
+This distribution looks slightly bimodal. The mode appears to be the same as the median, 1. For the purposes of this problem, I think we should use the mean value to impute the missing values. However, we should probably round the mean to the nearest integer since bare_nuclei is a discrete numeric variable.
+
+```{r mean-imputation}
+bare_nuclei_avg <- round(mean(cancer_df$bare_nuclei, na.rm = T))
+
+mean_df <- cancer_df %>%
+  mutate(bare_nuclei = ifelse(is.na(bare_nuclei), bare_nuclei_avg, bare_nuclei))
+
+print(paste("Number of obs:", sum(!is.na(mean_df$bare_nuclei))))
+summary(mean_df$bare_nuclei)
+```
+
+We can see here that our mean imputation was successful and there are no missing values, and that the average value is 3.555.
+
+## Part 2: Regression Method
+
+Now we will attempt the regression method. I am going to operate under the assumption that the missing values are missing at random. I will build the regression model using a stepwise regression so it's not overfit.
+
+```{r regression-model, echo = T, results = 'hide'}
+set.seed(1)
+reg_data <- cancer_df %>% filter(!is.na(bare_nuclei)) %>% select(-id)
+
+bare_nuclei.lm <- lm(
+  bare_nuclei ~ .,
+  data = reg_data
+)
+
+bare_nuclei.lm <- step(bare_nuclei.lm, bare_nuclei ~ ., direction = "both")
+
+```
+
+```{r reg-summary}
+summary(bare_nuclei.lm)
+```
+
+We can see that the most significant factors in estimating bare_nuclei above - with malignant having the largest effect.
+
+Since bare_nuclei is discrete, we will round the predicted values to the nearest integer.
+
+```{r regression-imputation}
+imp_data <- cancer_df %>% filter(is.na(bare_nuclei)) %>% select(-id)
+
+bare_nuclei_hat <- predict(bare_nuclei.lm, imp_data)
+
+imp_data$bare_nuclei <- bare_nuclei_hat %>% round()
+
+reg_df <- rbind(
+  reg_data,
+  imp_data
+)
+
+print(paste("Number of obs:", sum(!is.na(reg_df$bare_nuclei))))
+summary(reg_df$bare_nuclei)
+```
+
+We see here that the average is slightly less than the mean imputation method.
+
+## Part 3: Regression w/ Perturbation
+
+Now we will add random noise to the predicted values from the previous regression. We will also round the data to make sure the data are discrete.
+
+```{r regression-perturbation-imputation}
+set.seed(1)
+
+# Create vector of noise
+norm_noise <- rnorm(length(imp_data$bare_nuclei), mean = 0, sd = sd(reg_data$bare_nuclei))
+
+# Create vector of values with perturbation
+bare_nuclei_perturbed <- bare_nuclei_hat + norm_noise
+
+# Set perturbed values less than 0 to 1, values gt 10 to 10, and round values to the nearest integer
+bare_nuclei_perturbed <- case_when(
+  bare_nuclei_perturbed < 1 ~ 1,
+  bare_nuclei_perturbed > 10 ~ 10, 
+  TRUE ~ round(bare_nuclei_perturbed)
+  )
+
+pert_data <- imp_data
+pert_data$bare_nuclei <- bare_nuclei_perturbed
+
+reg_pert_df <- rbind(
+  reg_data,
+  pert_data
+)
+
+print(paste("Number of obs:", sum(!is.na(reg_pert_df$bare_nuclei))))
+summary(reg_pert_df$bare_nuclei)
+```
+
+We see here that the imputation was successful and that the average is slightly less than the regular regression method.
+
+## Part 4: Compare Imputation Methods Using Classification Models
+
+```{r data-split-setup}
+set.seed(1)
+# Data Splits
+  # Training index
+  train_index <- sample(
+    1:nrow(mean_df),
+    size = round(.6*nrow(mean_df)),
+    prob = rep(1/nrow(mean_df), nrow(mean_df))
+  )
+  # Testing index
+  test_index <- sample(
+    c(1:nrow(mean_df))[-c(train_index)],
+    size = round(.2*nrow(mean_df)),
+    prob = rep(1/round(.4*nrow(mean_df)), round(.4*nrow(mean_df)))
+  )
+  
+  # Validation index
+  valid_index <-  c(1:nrow(mean_df))[-c(train_index, test_index)]
+  
+# Mean Method
+  mean_train <- mean_df[train_index,]
+  mean_valid <- mean_df[valid_index,]
+  mean_test <- mean_df[test_index,]
+
+# Regression Method
+  reg_train <- reg_df[train_index,]
+  reg_valid <- reg_df[valid_index,]
+  reg_test <- reg_df[test_index,]
+
+# Regression w/ Perturbation Method
+  reg_pert_train <- reg_pert_df[train_index,]
+  reg_pert_valid <- reg_pert_df[valid_index,]
+  reg_pert_test <- reg_pert_df[test_index,]
+```
+
+### Part I: Compare Sets for SVM & KNN
+
+```{r svm-model, message = FALSE, warning = FALSE, echo = T, results = 'hide'}
+set.seed(1)
+
+# SVM Function
+svm_summarizer <- function(train_data, valid_data, C, kern){
+  svm_model <- ksvm(
+    as.matrix(train_data %>% select(-malignant)), as.factor(train_data$malignant),
+    type = "C-svc",
+    kernel = kern,
+    C = C,
+    scaled = TRUE
+  )
+  
+  yhat <- predict(svm_model, valid_data %>% select(-malignant))
+  y <- valid_data$malignant
+  
+  accuracy = sum(yhat == y) / length(y)
+  
+  TP = sum(yhat == 1 & y == 1)
+  #print(TP)
+  FN = sum(yhat == 0 & y == 1)
+  #print(FN)
+  sensitivity = TP/(TP + FN)
+  
+  FP = sum(yhat == 1 & y == 0)
+  #print(FP)
+  TN = sum(yhat == 0 & y == 0)
+  #print(TN)
+  specificity = TN/(TN + FP)
+  
+  data.frame(
+    kern = kern,
+    C_value = C,
+    accuracy = round(accuracy, 4),
+    sensitivity = round(sensitivity, 4),
+    specificity = round(specificity, 4)
+  )
+}
+
+# Set up SVM kernels
+svm_kernels <- c(
+  "rbfdot",
+  "polydot",
+  "vanilladot",
+  "tanhdot",
+  "laplacedot",
+  "besseldot",
+  "anovadot",
+  "splinedot"
+)
+
+# Mean Method
+  mean_svm_df <- data.frame() 
+  for (i in c(0.0001, 0.001, 0.01, 0.1, 1, seq(10, 100, by = 10))) {
+    for (j in svm_kernels){
+      mean_svm_df <- rbind(mean_svm_df, svm_summarizer(mean_train[, 2:11], mean_valid[, 2:11], i, j))
+    }
+  }
+  
+  
+# Regression Method
+  reg_svm_df <- data.frame()
+  for (i in c(0.0001, 0.001, 0.01, 0.1, 1, seq(10, 100, by = 10))) {
+    for (j in svm_kernels){
+      reg_svm_df <- rbind(reg_svm_df, svm_summarizer(reg_train, reg_valid, i, j))
+    }
+  }
+
+# Regression w/ Perturbation Method
+  reg_pert_svm_df <- data.frame()
+  for (i in c(0.0001, 0.001, 0.01, 0.1, 1, seq(10, 100, by = 10))) {
+    for (j in svm_kernels){
+      reg_pert_svm_df <- rbind(reg_pert_svm_df, svm_summarizer(reg_pert_train, reg_pert_valid, i, j))
+    }
+  }
+  
+```
+
+Manually viewing the accuracy, sensitivity, and specificity of these models for different kernel types and C values on the validation set, I noticed a lot of models with similar performance metrics. For the sake of simplicity, I will use an SVM model with a polynomial kernel and a C constant of 1 to test the performance of each model trained.
+
+```{r svm-testing}
+mean_test_perf <- svm_summarizer(mean_train[, 2:11], mean_test[, 2:11], 1, "polydot")
+
+reg_test_perf <- svm_summarizer(reg_train, reg_test, 1, "polydot")
+
+reg_pert_test_perf <- svm_summarizer(reg_pert_train, reg_pert_test, 1, "polydot")
+
+svm_results_df <- rbind(
+  mean_test_perf,
+  reg_test_perf
+) %>%
+  rbind(reg_pert_test_perf) %>%
+  mutate(imputation_method = c("mean", "regression", "regression w/ perturbation"), .before = kern) %>%
+  select(-c(kern, C_value))
+
+print(svm_results_df)
+```
+
+The model trained on the mean-imputed data seemed to have performed the best on the test set, while the performance of the models trained on the regression-imputed and regression with perturbation imputed data are very similar.
+
+### Part II: Remove Data Points with Missing Values
+
+For the sake of simplicity, I will be using the same SVM model as in the previous question. However, I will only do a single 80/20 training/testing split since I am not aiming to pick a new model and/or parameters.
+
+```{r remove-values-SVM}
+set.seed(1)
+removed_df <- cancer_df %>% filter(!is.na(bare_nuclei)) %>% select(-id)
+# Training index
+  train_index2 <- sample(
+    1:nrow(removed_df),
+    size = round(.8*nrow(removed_df)),
+    prob = rep(1/nrow(removed_df), nrow(removed_df))
+  )
+
+  
+print(svm_summarizer(removed_df[train_index2,], removed_df[-train_index2,], 1, "polydot"))
+```
+
+As seen by the output above, the model appears to be highly accurate with a 100% sensitivity rate - which is what we would want for a model to detect malignant tumors. However, these values give me caution that model could be over fit - which could be remedied by k-fold cross validation in all fairness.
+
+### Part III: Missing Value Binary
+
+The other option we have is to keep the missing data in, but to add another column indicating the missing observations in bare_nuclei.
+
+```{r binary-option}
+set.seed(1)
+binary_df <- cancer_df %>% 
+  mutate(
+    missing = ifelse(is.na(bare_nuclei), 1, 0), 
+    bare_nuclei = ifelse(is.na(bare_nuclei), 0, bare_nuclei),
+    .after = bare_nuclei
+  ) %>% 
+  select(-id)
+
+# Training index
+  train_index3 <- sample(
+    1:nrow(binary_df),
+    size = round(.8*nrow(binary_df)),
+    prob = rep(1/nrow(binary_df), nrow(binary_df))
+  )
+
+  
+print(svm_summarizer(binary_df[train_index3,], binary_df[-train_index3,], 1, "polydot"))
+```
+
+These results are in line with the other methods, but there is lightly lower accuracy, sensitivity, and specificity rates than the removal method.
+
+# Question 15.1 - Optimization Model IRL
+
+One of my buddies bakes bread for local farmer's markets. Suppose he approaches me and asks me to determine how much of each type of bread he should make to maximize his profits.
+
+To build a preliminary optimization model, I would need him to provide me the following data for all of the farmers market he attended:
+
+1.  The date of the farmers market
+
+2.  The types of bread he makes
+
+3.  The amount of each type of bread he made for the farmers market
+
+4.  How much bread he sold - for each type
+
+5.  How much each type of bread costs to make (per unit)
+
+6.  How much he sells each type of bread for (per unit)
+
+I would then define the following components of my optimization model:
+
+-   $L$ = 80th quantile of all loaves sold on a given day (maximum amount of loaves to bake)
+-   $c_i$ = cost to make each loaf of bread $i$
+-   $p_i$ = selling price of each loaf of bread $i$
+-   $D_i$ = average number of bread $i$ sold on a given day
+
+Each part of the optimization model is as follows:
+
+1.  Variable: $x_i$ = number of loaves of bread $i$
+
+2.  Constraints:
+
+-   $\sum{x_{i}} \le L$ where $x_i \ge 0$
+-   $p_i > c_i \forall$ loaves $i$ - guarantees no bread will be made where the cost exceeds the price
+-   $x_i \ge D_i$ - assumes demand will at least be at its average
+
+3.  Objective Function: $\max{\sum (p_ix_i - c_ix_i)}$
+
+It's highly probable I'm missing something, but I feel like this a good start!

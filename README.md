@@ -1,4 +1,4 @@
-In this project directory, you will find an unedited R Markdown file that contains my solution for a homework assignment I had in the Fall 2024 semester. The assignment I am sharing with you was completed on October 30, 2024 and contained the following questions:
+In this project directory, you will find an R Markdown file that contains my solution for a homework assignment I had in the Fall 2024 semester. The assignment I am sharing with you was completed on October 30, 2024 and has not been edited since then. It contained the following questions:
 
 ## Question 14.1
 The breast cancer data set breast-cancer-wisconsin.data.txt from http://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/  (description at http://archive.ics.uci.edu/ml/datasets/Breast+Cancer+Wisconsin+%28Original%29 ) has missing values.
